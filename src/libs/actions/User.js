@@ -14,7 +14,6 @@ import Log from '../Log';
 import NetworkConnection from '../NetworkConnection';
 import NameValuePair from './NameValuePair';
 import getSkinToneEmojiFromIndex from '../../pages/home/report/EmojiPickerMenu/getSkinToneEmojiFromIndex';
-import Timers from '../Timers';
 
 let sessionAuthToken = '';
 let sessionEmail = '';
@@ -73,9 +72,13 @@ function getBetas() {
  * If the info for the domain is not in bedrock, then it creates an asynchronous bedrock job to gather domain info.
  * If that happens, this function will automatically retry itself in 10 minutes.
  *
- * @param {Array} loginList
+ * @param {String} loginList
  */
 function getDomainInfo(loginList) {
+    // If the command failed, we'll retry again in 10 minutes,
+    // arbitrarily chosen giving Bedrock time to resolve the ClearbitCheckPublicEmail job for this email.
+    const RETRY_TIMEOUT = 600000;
+
     // First we filter out any domains that are in the list of common public domains
     const emailList = _.filter(loginList, email => (
         !_.contains(COMMON_PUBLIC_DOMAINS, Str.extractEmailDomain(email))
@@ -105,13 +108,9 @@ function getDomainInfo(loginList) {
                         Onyx.merge(ONYXKEYS.USER, {isUsingExpensifyCard});
                     });
             } else {
-                // If the command failed, we'll retry again in 10 minutes,
-                // arbitrarily chosen giving Bedrock time to resolve the ClearbitCheckPublicEmail job for this email.
-                const RETRY_TIMEOUT = 600_000;
-
                 // eslint-disable-next-line max-len
                 console.debug(`Command User_IsFromPublicDomain returned error code: ${response.jsonCode}. Most likely, this means that the domain ${Str.extractEmail(sessionEmail)} is not in the bedrock cache. Retrying in ${RETRY_TIMEOUT / 1000 / 60} minutes`);
-                Timers.register(setTimeout(() => getDomainInfo(loginList), RETRY_TIMEOUT));
+                setTimeout(() => getDomainInfo(loginList), RETRY_TIMEOUT);
             }
         });
 }
@@ -143,10 +142,7 @@ function getUserDetails() {
             Onyx.merge(ONYXKEYS.NVP_BLOCKED_FROM_CONCIERGE, blockedFromConcierge);
 
             // Get list of validated logins and fetch domain info
-            const emailList = _.chain(loginList)
-                .filter(userLogin => userLogin.validatedDate)
-                .map(userLogin => userLogin.partnerUserID)
-                .value();
+            const emailList = _.map(loginList, userLogin => userLogin.partnerUserID);
             getDomainInfo(emailList);
 
             const preferredSkinTone = lodashGet(response, `nameValuePairs.${CONST.NVP.PREFERRED_EMOJI_SKIN_TONE}`, {});
@@ -267,15 +263,6 @@ function isBlockedFromConcierge(expiresAt) {
 }
 
 /**
- * Sets isFromPublicDomain in Onyx.
- *
- * @param {Boolean} isFromPublicDomain
- */
-function setIsFromPublicDomain(isFromPublicDomain) {
-    Onyx.merge(ONYXKEYS.USER, {isFromPublicDomain});
-}
-
-/**
  * Initialize our pusher subscription to listen for user changes
  */
 function subscribeToUserEvents() {
@@ -298,18 +285,6 @@ function subscribeToUserEvents() {
                 '[User] Failed to subscribe to Pusher channel',
                 false,
                 {error, pusherChannelName, eventName: Pusher.TYPE.PREFERRED_LOCALE},
-            );
-        });
-
-    // Live-update if a user has private domains listed as primary or secondary logins.
-    Pusher.subscribe(pusherChannelName, Pusher.TYPE.ACCOUNT_VALIDATED, (pushJSON) => {
-        setIsFromPublicDomain(pushJSON.isFromPublicDomain);
-    })
-        .catch((error) => {
-            Log.info(
-                '[User] Failed to subscribe to Pusher channel',
-                false,
-                {error, pusherChannelName, eventName: Pusher.TYPE.ACCOUNT_VALIDATED},
             );
         });
 }
